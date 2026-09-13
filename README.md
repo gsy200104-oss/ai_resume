@@ -4,6 +4,10 @@
 
 面试官可以通过自然语言问答，了解我的教育背景、科研经历、项目经验和技术能力。
 
+## 在线演示
+
+[点击这里体验 AI Interactive Resume](https://airesume-psqiujjucpzak8egn2nccd.streamlit.app/)
+
 ## 功能
 
 - 自然语言问答
