@@ -1,148 +1,165 @@
 import streamlit as st
 from openai import OpenAI
 
-from embedding_retriever import retrieve
+from agent_engine import run_agent
 
 
-# =========================
+# =========================================================
 # 页面设置
-# =========================
+# =========================================================
+
 st.set_page_config(
-    page_title="高颂岩｜AI Interactive Resume",
+    page_title="高颂岩｜AI Resume Agent",
     page_icon="🤖",
     layout="wide"
 )
 
 
-# =========================
-# 初始化聊天记录
-# =========================
+# =========================================================
+# Session State
+# =========================================================
+
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
 
-# =========================
+# =========================================================
 # API Key
-# 现在先用于本地测试
-# 后面部署时会改成 Secrets
-# =========================
+# =========================================================
+
 api_key = st.secrets["DEEPSEEK_API_KEY"]
 
+client = OpenAI(
+    api_key=api_key,
+    base_url="https://api.deepseek.com"
+)
 
-# =========================
-# 页面两栏布局
-# =========================
+
+# =========================================================
+# 页面布局
+# =========================================================
+
 left_col, right_col = st.columns([1, 2])
 
 
-# =========================
-# 左侧：个人简历信息
-# =========================
+# =========================================================
+# 左侧：候选人信息
+# =========================================================
+
 with left_col:
+
     st.title("高颂岩")
 
     st.write("**求职方向：AI 应用开发**")
+
     st.write("中国海洋大学")
-    st.write("材料 / 生物工程相关背景")
+
+    st.write("材料 / 生物工程交叉背景")
 
     st.divider()
+
 
     st.subheader("核心能力")
 
     st.write("🐍 Python")
-    st.write("🌐 Streamlit")
-    st.write("🤖 DeepSeek API")
+    st.write("🤖 LLM API")
     st.write("📚 RAG")
-    st.write("📊 数据分析")
+    st.write("🧠 Embedding")
+    st.write("🔍 向量检索")
+    st.write("🛠️ Tool Calling")
+    st.write("🤖 Agent")
+    st.write("🌐 Streamlit")
+
 
     st.divider()
+
 
     st.subheader("项目亮点")
 
-    st.write("• AI 简历知识库助手")
-    st.write("• 科研与材料项目经历")
-    st.write("• 数据分析与实验设计")
-    st.write("• 项目管理与团队协作")
+    st.write("• AI Resume Agent")
+    st.write("• RAG 知识库问答")
+    st.write("• 多工具 Tool Calling")
+    st.write("• JD 岗位匹配分析")
+    st.write("• 智能面试问题生成")
+    st.write("• Streamlit Cloud 在线部署")
 
 
-# =========================
-# 右侧：AI 简历助手
-# =========================
+# =========================================================
+# 右侧：面试官交互区
+# =========================================================
+
 with right_col:
-    st.title("AI Interactive Resume")
+
+    st.title("AI Resume Agent")
 
     st.write(
-        "👋 你好，我是高颂岩的 AI 简历助手。"
+        "👋 你好，我是高颂岩的 AI 简历 Agent。"
     )
 
     st.write(
-        "你可以直接向我提问，了解教育背景、科研经历、"
-        "项目经验和技术能力。"
+        "你可以向我询问候选人的教育背景、科研经历、"
+        "AI 项目和技术能力，也可以粘贴岗位 JD，"
+        "让我分析候选人与岗位的匹配情况，"
+        "并生成建议重点追问的面试问题。"
     )
+
 
     st.divider()
 
-    # =========================
+
+    # =====================================================
     # 推荐问题
-    # =========================
+    # =====================================================
+
     st.subheader("你可以问我")
 
     col1, col2 = st.columns(2)
 
+
     with col1:
-        if st.button(
-            "介绍一下你自己",
-            use_container_width=True
-        ):
+
+        if st.button("介绍一下这个候选人"):
             st.session_state.suggested_question = (
-                "介绍一下你自己"
+                "请从招聘方视角介绍一下候选人高颂岩。"
             )
 
-        if st.button(
-            "你有哪些科研经历？",
-            use_container_width=True
-        ):
+        if st.button("他有哪些 AI 项目？"):
             st.session_state.suggested_question = (
-                "你有哪些科研经历？"
+                "高颂岩做过哪些 AI 项目？"
             )
 
-        if st.button(
-            "你的 Python 能力怎么样？",
-            use_container_width=True
-        ):
+        if st.button("他的 RAG 项目怎么实现？"):
             st.session_state.suggested_question = (
-                "你的 Python 能力怎么样？"
+                "请详细介绍高颂岩的 RAG 项目是如何实现的。"
             )
+
 
     with col2:
-        if st.button(
-            "你做过哪些项目？",
-            use_container_width=True
-        ):
+
+        if st.button("他有哪些科研经历？"):
             st.session_state.suggested_question = (
-                "你做过哪些项目？"
+                "高颂岩有哪些科研经历？"
             )
 
-        if st.button(
-            "你在项目中主要负责什么？",
-            use_container_width=True
-        ):
+        if st.button("为什么转向 AI 应用开发？"):
             st.session_state.suggested_question = (
-                "你在项目中主要负责什么？"
+                "高颂岩为什么希望进入 AI 应用开发方向？"
             )
 
-        if st.button(
-            "为什么想进入 AI 应用开发？",
-            use_container_width=True
-        ):
+        if st.button("我应该重点追问什么？"):
             st.session_state.suggested_question = (
-                "为什么想进入 AI 应用开发？"
+                "假设我是一名面试官，请结合高颂岩的真实经历，"
+                "给我一些值得重点追问的面试问题，"
+                "并说明每个问题主要想考察什么。"
             )
 
-    # =========================
+
+    # =====================================================
     # 清空聊天
-    # =========================
+    # =====================================================
+
     if st.button("🗑️ 清空聊天"):
+
         st.session_state.messages = []
 
         if "suggested_question" in st.session_state:
@@ -150,49 +167,68 @@ with right_col:
 
         st.rerun()
 
+
     st.divider()
 
-    # =========================
-    # 显示历史聊天
-    # =========================
+
+    # =====================================================
+    # 显示历史消息
+    # =====================================================
+
     for message in st.session_state.messages:
+
         with st.chat_message(message["role"]):
+
             st.write(message["content"])
 
             if (
                 message["role"] == "assistant"
-                and "source" in message
+                and message.get("tools")
             ):
+
                 st.caption(
-                    f"资料来源：{message['source']}"
+                    "Agent Tools："
+                    + " → ".join(message["tools"])
                 )
 
-    # =========================
+
+    # =====================================================
     # 用户输入
-    # =========================
+    # =====================================================
+
     question = st.chat_input(
-        "你想了解我的什么？"
+        "向 AI Resume Agent 提问..."
     )
 
-    # 如果用户点击了推荐问题按钮
+
+    # 推荐问题按钮
     if "suggested_question" in st.session_state:
+
         question = st.session_state.suggested_question
+
         del st.session_state.suggested_question
 
-    # =========================
-    # 开始处理用户问题
-    # =========================
+
+    # =====================================================
+    # Agent 执行
+    # =====================================================
+
     if question:
 
-        # -------------------------
+        conversation_history = list(
+            st.session_state.messages
+        )
+
+
+        # -----------------------------
         # 显示用户问题
-        # -------------------------
+        # -----------------------------
+
         with st.chat_message("user"):
+
             st.write(question)
 
-        # -------------------------
-        # 保存用户问题
-        # -------------------------
+
         st.session_state.messages.append(
             {
                 "role": "user",
@@ -200,161 +236,58 @@ with right_col:
             }
         )
 
-        # -------------------------
-        # RAG：检索 Top-K 资料
-        # -------------------------
-        retrieved_documents = retrieve(
-            question,
-            top_k=3
-        )
 
-        # -------------------------
-        # 合并检索结果
-        # -------------------------
-        if retrieved_documents:
+        # -----------------------------
+        # 调用 Agent
+        # -----------------------------
 
-            context_parts = []
+        with st.chat_message("assistant"):
 
-            for document in retrieved_documents:
-                context_parts.append(
-                    f"""
-来源：{document["source"]}
+            with st.spinner(
+                "Agent 正在分析任务并调用工具..."
+            ):
 
-{document["content"]}
-"""
+                result = run_agent(
+                    client=client,
+                    user_question=question,
+                    conversation_history=conversation_history
                 )
 
-            context = "\n\n".join(
-                context_parts
-            )
 
-            # 去除重复来源
-            sources = []
+            answer = result["answer"]
 
-            for document in retrieved_documents:
-                if document["source"] not in sources:
-                    sources.append(
-                        document["source"]
-                    )
+            tool_trace = result["tool_trace"]
 
-            source = "、".join(sources)
 
-        else:
-            context = (
-                "没有检索到相关资料。"
-            )
-            source = "无"
+            st.write(answer)
 
-        # -------------------------
-        # 检查 API Key
-        # -------------------------
-        if not api_key:
-
-            st.warning(
-                "请先输入 DeepSeek API Key。"
-            )
-
-        else:
 
             # -------------------------
-            # 创建 DeepSeek 客户端
+            # 展示调用过的 Tool
             # -------------------------
-            client = OpenAI(
-                api_key=api_key,
-                base_url="https://api.deepseek.com"
-            )
 
-            # -------------------------
-            # System Prompt
-            # -------------------------
-            messages = [
-                {
-                    "role": "system",
-                    "content": f"""
-你是高颂岩的 AI 简历助手。
-
-你的任务是帮助面试官了解高颂岩的教育背景、
-科研经历、项目经历、技术能力以及求职方向。
-
-下面是系统根据面试官当前问题，
-从高颂岩个人知识库中检索到的相关资料：
-
-========================
-
-{context}
-
-========================
-
-请严格遵守以下规则：
-
-1. 只能根据上面检索到的资料回答。
-
-2. 不得编造高颂岩没有经历过的事情。
-
-3. 不得虚构公司、项目、数据、技能、
-学历、奖项或工作经历。
-
-4. 如果检索到的资料不足以回答问题，
-请明确说明：
-“目前检索到的资料中没有相关信息。”
-
-5. 不要根据常识猜测或补充资料中不存在的信息。
-
-6. 如果资料中明确存在答案，
-请直接、自然地回答，不要过度保守。
-
-7. 回答应当专业、自然、简洁，
-像候选人在真实面试中回答问题。
-
-8. 如果问题涉及多个方面，
-可以根据检索到的多条资料进行综合回答。
-"""
-                }
+            tool_names = [
+                item["tool"]
+                for item in tool_trace
             ]
 
-            # -------------------------
-            # 加入历史对话
-            # -------------------------
-            messages.extend(
-                st.session_state.messages
-            )
 
-            # -------------------------
-            # 调用 DeepSeek
-            # -------------------------
-            response = (
-                client.chat.completions.create(
-                    model="deepseek-chat",
-                    messages=messages
-                )
-            )
-
-            answer = (
-                response
-                .choices[0]
-                .message
-                .content
-            )
-
-            # -------------------------
-            # 显示 AI 回答
-            # -------------------------
-            with st.chat_message(
-                "assistant"
-            ):
-                st.write(answer)
+            if tool_names:
 
                 st.caption(
-                    f"资料来源：{source}"
+                    "Agent Tools："
+                    + " → ".join(tool_names)
                 )
 
-            # -------------------------
-            # 保存 AI 回答
-            # -------------------------
-            st.session_state.messages.append(
-                {
-                    "role": "assistant",
-                    "content": answer,
-                    "source": source
-                }
-            )
+
+        # -----------------------------
+        # 保存回答
+        # -----------------------------
+
+        st.session_state.messages.append(
+            {
+                "role": "assistant",
+                "content": answer,
+                "tools": tool_names
+            }
+        )
