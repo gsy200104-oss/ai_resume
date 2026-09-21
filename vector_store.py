@@ -1,4 +1,7 @@
-"""简历知识库：Contextual Chunking、自动同步与意图感知向量检索。"""
+"""
+简历知识库：
+Contextual Chunking、自动同步与意图感知向量检索。
+"""
 
 from functools import lru_cache
 from pathlib import Path
@@ -8,30 +11,38 @@ import re
 
 import chromadb
 
-
-# =========================================================
-# 基础配置
-# =========================================================
-
-# 基础配置与索引格式保持兼容；
-# 仅修改模型加载方式，不改变已有 Embedding 索引格式。
-
-KNOWLEDGE_DIR = Path("knowledge")
-
-CHROMA_DIR = Path("chroma_db")
-
-HASH_FILE = CHROMA_DIR / "knowledge_hash.txt"
-
-CANDIDATE_NAME = "高颂岩"
-
-MODEL_NAME = (
-    "sentence-transformers/"
-    "paraphrase-multilingual-MiniLM-L12-v2"
+from config import (
+    CANDIDATE_NAME,
+    EMBEDDING_MODEL,
+    CHROMA_DIR as CHROMA_DIR_CONFIG,
+    CHROMA_COLLECTION_NAME,
+    KNOWLEDGE_DIR as KNOWLEDGE_DIR_CONFIG,
+    INDEX_VERSION,
 )
 
-COLLECTION_NAME = "resume_knowledge"
 
-INDEX_VERSION = "contextual-chunking-v3-knowledge-structure"
+# =========================================================
+# 1. 基础配置
+# =========================================================
+
+KNOWLEDGE_DIR = Path(
+    KNOWLEDGE_DIR_CONFIG
+)
+
+CHROMA_DIR = Path(
+    CHROMA_DIR_CONFIG
+)
+
+HASH_FILE = (
+    CHROMA_DIR
+    / "knowledge_hash.txt"
+)
+
+MODEL_NAME = EMBEDDING_MODEL
+
+COLLECTION_NAME = (
+    CHROMA_COLLECTION_NAME
+)
 
 
 SOURCE_TYPE_MAP = {
@@ -44,52 +55,61 @@ SOURCE_TYPE_MAP = {
 
 
 # =========================================================
-# Chroma
+# 2. Chroma
 # =========================================================
 
-# Chroma 本身保留启动时初始化。
-# 它远比 SentenceTransformer 模型轻，
-# 暂时不需要额外复杂化。
+# Chroma 客户端本身比较轻，
+# 可以在模块导入时初始化。
+#
+# Embedding Model 则继续使用 Lazy Loading，
+# 避免网页 / API 启动时加载 MiniLM。
 
-chroma_client = chromadb.PersistentClient(
-    path=str(CHROMA_DIR)
+chroma_client = (
+    chromadb.PersistentClient(
+        path=str(CHROMA_DIR)
+    )
 )
 
-collection = chroma_client.get_or_create_collection(
-    name=COLLECTION_NAME
+collection = (
+    chroma_client
+    .get_or_create_collection(
+        name=COLLECTION_NAME
+    )
 )
 
 
 # =========================================================
-# Embedding Model Lazy Loading
+# 3. Embedding Model Lazy Loading
 # =========================================================
 
 @lru_cache(maxsize=1)
 def get_embedding_model():
     """
-    懒加载 Embedding 模型。
+    懒加载 Embedding Model。
 
-    启动 Streamlit / import vector_store 时：
+    启动 Streamlit / FastAPI 时：
         不加载 MiniLM。
 
-    第一次真正需要：
-        - 构建 Knowledge Embedding
-        - 用户执行向量检索
+    第一次真正需要进行：
+        - Query Embedding
+        - Knowledge 重建
 
-    时才加载模型。
+    时才加载。
 
-    后续在同一个 Python 进程中直接复用，
-    不会重复加载。
+    同一 Python 进程后续直接复用模型。
     """
 
     print(
-        f"首次需要 Embedding Model，正在加载：{MODEL_NAME}"
+        "首次需要 Embedding Model，"
+        f"正在加载：{MODEL_NAME}"
     )
 
-    # 放到函数内部，
-    # 避免 import vector_store 时连
-    # sentence-transformers 都提前加载。
-    from sentence_transformers import SentenceTransformer
+    # 放到函数内部导入，
+    # 避免 import vector_store 时提前加载
+    # sentence-transformers。
+    from sentence_transformers import (
+        SentenceTransformer,
+    )
 
     model = SentenceTransformer(
         MODEL_NAME
@@ -103,10 +123,16 @@ def get_embedding_model():
 
 
 # =========================================================
-# Knowledge 类型
+# 4. Knowledge Source Type
 # =========================================================
 
-def get_source_type(file_name: str) -> str:
+def get_source_type(
+    file_name: str
+) -> str:
+    """
+    根据 Knowledge 文件名判断资料类型。
+    """
+
     return SOURCE_TYPE_MAP.get(
         file_name,
         "个人资料",
@@ -114,13 +140,19 @@ def get_source_type(file_name: str) -> str:
 
 
 # =========================================================
-# Query Normalize
+# 5. Query Normalize
 # =========================================================
 
-def normalize_query(query: str) -> str:
+def normalize_query(
+    query: str
+) -> str:
     """
-    仅为意图检测统一大小写和空白，
-    不改变送入 Embedding 的原问题。
+    仅用于 Intent Detection：
+
+    - 转小写
+    - 去掉空白
+
+    不改变真正送入 Embedding Model 的原始问题。
     """
 
     return re.sub(
@@ -131,35 +163,48 @@ def normalize_query(query: str) -> str:
 
 
 # =========================================================
-# Intent Detection
+# 6. Intent Detection
 # =========================================================
 
-def detect_query_source_type(query: str):
+def detect_query_source_type(
+    query: str
+):
     """
-    只对明确的单一资料类别路由。
+    判断 Query 是否明确属于某一种资料类别。
 
-    不确定或跨类别时返回 None。
+    如果明确：
+        返回 source_type，
+        后续使用 Metadata Filter。
+
+    如果不明确或涉及多个类别：
+        返回 None，
+        使用全库向量检索。
     """
 
-    q = normalize_query(query)
+    q = normalize_query(
+        query
+    )
 
 
-    # -----------------------------------------------------
+    # =====================================================
     # 实习
-    # -----------------------------------------------------
+    # =====================================================
 
-    # “实习”是强类别信号，
-    # 优先直接路由。
+    # “实习”属于强类别信号。
     if "实习" in q:
+
         return "实习经历"
 
 
-    # -----------------------------------------------------
+    # =====================================================
     # 管理 / 协作
-    # -----------------------------------------------------
+    # =====================================================
 
-    # 管理和协作能力需要结合项目、技能等多来源，
-    # 避免“项目”子串把它误判为单一项目经历。
+    # 例如：
+    # “项目管理能力怎么样”
+    #
+    # 这种问题不能简单路由到 projects.md，
+    # 因为还可能需要 skills.md。
 
     if (
         (
@@ -182,12 +227,13 @@ def detect_query_source_type(query: str):
             )
         )
     ):
+
         return None
 
 
-    # -----------------------------------------------------
-    # 各类别关键词
-    # -----------------------------------------------------
+    # =====================================================
+    # Research
+    # =====================================================
 
     research_patterns = (
         "硕士课题",
@@ -201,6 +247,11 @@ def detect_query_source_type(query: str):
         "做过哪些科研",
         "做过什么科研",
     )
+
+
+    # =====================================================
+    # Education
+    # =====================================================
 
     education_patterns = (
         "教育背景",
@@ -219,6 +270,11 @@ def detect_query_source_type(query: str):
         "硕士专业",
     )
 
+
+    # =====================================================
+    # Projects
+    # =====================================================
+
     project_patterns = (
         "项目经历",
         "项目经验",
@@ -233,6 +289,11 @@ def detect_query_source_type(query: str):
         "科研文献智能分析agent",
         "文献智能分析agent",
     )
+
+
+    # =====================================================
+    # Skills
+    # =====================================================
 
     skill_patterns = (
         "技能有哪些",
@@ -249,6 +310,10 @@ def detect_query_source_type(query: str):
         "编程能力",
     )
 
+
+    # =====================================================
+    # Collect Matches
+    # =====================================================
 
     matches = set()
 
@@ -276,20 +341,26 @@ def detect_query_source_type(query: str):
             pattern in q
             for pattern in patterns
         ):
+
             matches.add(
                 source_type
             )
 
 
-    # -----------------------------------------------------
-    # 论文
-    # -----------------------------------------------------
+    # =====================================================
+    # Publication
+    # =====================================================
 
-    # “论文”本身和“有哪些/有什么”都不够明确：
-    # 论文阅读、写作工具也可能属于技能或项目。
+    # “论文”本身不能直接认为是科研经历。
     #
-    # 只有同时出现明确发表/成果/署名信号，
-    # 才路由科研经历。
+    # 例如：
+    # “会不会进行论文分析？”
+    #
+    # 可能是在问 AI / 技能。
+    #
+    # 只有同时出现：
+    # 发表、DOI、作者、成果等信息时，
+    # 才判断为科研经历。
 
     publication_patterns = (
         "发表",
@@ -301,6 +372,7 @@ def detect_query_source_type(query: str):
         "论文标题",
     )
 
+
     if (
         "论文" in q
         and any(
@@ -309,32 +381,36 @@ def detect_query_source_type(query: str):
             in publication_patterns
         )
     ):
+
         matches.add(
             "科研经历"
         )
 
 
-    # -----------------------------------------------------
-    # 单一类别才启用 Metadata Filter
-    # -----------------------------------------------------
-
-    # 例如：
-    # “教育背景、项目经历、科研经历”
-    # 必须保留全库召回。
+    # =====================================================
+    # Only One Category
+    # =====================================================
 
     if len(matches) == 1:
+
         return next(
             iter(matches)
         )
+
 
     return None
 
 
 # =========================================================
-# Markdown Chunk
+# 7. Markdown Chunk Helpers
 # =========================================================
 
-def get_section_title(chunk: str) -> str:
+def get_section_title(
+    chunk: str
+) -> str:
+    """
+    从 Chunk 中寻找第一个 Markdown 标题。
+    """
 
     for line in chunk.splitlines():
 
@@ -348,6 +424,7 @@ def get_section_title(chunk: str) -> str:
                 .strip()
             )
 
+
     return "概览"
 
 
@@ -355,18 +432,24 @@ def has_meaningful_content(
     chunk: str
 ) -> bool:
     """
-    过滤只有标题或空白的空壳 Chunk。
+    过滤只有标题、没有正文内容的空壳 Chunk。
     """
 
     return any(
 
         line.strip()
-        and not line.strip().startswith("#")
+        and not line
+        .strip()
+        .startswith("#")
 
         for line
         in chunk.splitlines()
     )
 
+
+# =========================================================
+# 8. Contextual Chunk
+# =========================================================
 
 def build_contextual_chunk(
     source: str,
@@ -374,17 +457,19 @@ def build_contextual_chunk(
     raw_content: str,
 ) -> str:
     """
-    给原文添加：
+    给原始 Knowledge Chunk 添加：
+
     - 候选人
     - 资料类型
-    - 章节
+    - 章节标题
 
-    保持 V3 索引内容格式。
+    提高 Embedding 检索语义。
     """
 
     return (
 
-        f"候选人：{CANDIDATE_NAME}\n"
+        f"候选人："
+        f"{CANDIDATE_NAME}\n"
 
         f"资料类型："
         f"{get_source_type(source)}\n"
@@ -397,12 +482,21 @@ def build_contextual_chunk(
     ).strip()
 
 
+# =========================================================
+# 9. Markdown Split
+# =========================================================
+
 def split_markdown_file(
     file_path: Path
 ) -> list:
+    """
+    以 Markdown 二级标题 ## 为主要 Chunk 边界。
+    """
 
-    content = file_path.read_text(
-        encoding="utf-8"
+    content = (
+        file_path.read_text(
+            encoding="utf-8"
+        )
     )
 
     chunks = []
@@ -412,27 +506,35 @@ def split_markdown_file(
         content.split("\n## ")
     ):
 
-        section = section.strip()
+        section = (
+            section.strip()
+        )
+
 
         if not section:
+
             continue
 
 
         raw_chunk = (
+
             section
+
             if index == 0
+
             else "## " + section
         )
 
 
+        # 跳过只有标题的 Chunk
         if not has_meaningful_content(
             raw_chunk
         ):
 
             print(
-                f"跳过空壳 Chunk："
+                "跳过空壳 Chunk："
                 f"{file_path.name}"
-                f" → "
+                " → "
                 f"{get_section_title(raw_chunk)}"
             )
 
@@ -448,15 +550,22 @@ def split_markdown_file(
 
 
 # =========================================================
-# Load Knowledge
+# 10. Load Knowledge
 # =========================================================
 
 def load_knowledge():
+    """
+    加载 knowledge/*.md，
+    并转换为结构化 Documents。
+    """
 
     documents = []
 
+
     markdown_files = sorted(
-        KNOWLEDGE_DIR.glob("*.md")
+        KNOWLEDGE_DIR.glob(
+            "*.md"
+        )
     )
 
 
@@ -484,7 +593,10 @@ def load_knowledge():
 
     for file_path in markdown_files:
 
-        source = file_path.name
+        source = (
+            file_path.name
+        )
+
 
         source_type = (
             get_source_type(
@@ -497,8 +609,8 @@ def load_knowledge():
 
             print(
                 f"注意：{source} "
-                f"未配置资料类型，"
-                f"暂标记为「个人资料」。"
+                "未配置资料类型，"
+                "暂标记为「个人资料」。"
             )
 
 
@@ -549,7 +661,7 @@ def load_knowledge():
 
 
     print(
-        f"\nKnowledge 总 Chunk 数："
+        "\nKnowledge 总 Chunk 数："
         f"{len(documents)}"
     )
 
@@ -558,18 +670,26 @@ def load_knowledge():
 
 
 # =========================================================
-# Knowledge Hash
+# 11. Knowledge Hash
 # =========================================================
 
 def calculate_knowledge_hash():
     """
-    以索引版本、文件名和文件原始字节
-    计算 SHA256。
+    计算 Knowledge 当前版本的 SHA256。
 
-    沿用 V3 算法。
+    Hash 内容包括：
+
+    - INDEX_VERSION
+    - Knowledge 文件名
+    - Knowledge 文件原始内容
+
+    如果内容改变，则自动重建 Chroma。
     """
 
-    hasher = hashlib.sha256()
+    hasher = (
+        hashlib.sha256()
+    )
+
 
     hasher.update(
         INDEX_VERSION.encode(
@@ -579,7 +699,9 @@ def calculate_knowledge_hash():
 
 
     for file_path in sorted(
-        KNOWLEDGE_DIR.glob("*.md")
+        KNOWLEDGE_DIR.glob(
+            "*.md"
+        )
     ):
 
         hasher.update(
@@ -597,24 +719,35 @@ def calculate_knowledge_hash():
 
 
 def load_saved_hash():
+    """
+    读取上一次 Knowledge Hash。
+    """
 
     if not HASH_FILE.exists():
+
         return None
 
 
-    return HASH_FILE.read_text(
-        encoding="utf-8"
-    ).strip()
+    return (
+        HASH_FILE.read_text(
+            encoding="utf-8"
+        )
+        .strip()
+    )
 
 
 def save_hash(
     hash_value: str
 ):
+    """
+    保存 Knowledge Hash。
+    """
 
     CHROMA_DIR.mkdir(
         parents=True,
         exist_ok=True,
     )
+
 
     HASH_FILE.write_text(
         hash_value,
@@ -623,10 +756,13 @@ def save_hash(
 
 
 # =========================================================
-# Build Vector Store
+# 12. Build Vector Store
 # =========================================================
 
 def build_vector_store():
+    """
+    根据 Knowledge 重建 Chroma Vector Store。
+    """
 
     documents = (
         load_knowledge()
@@ -652,9 +788,9 @@ def build_vector_store():
     ]
 
 
-    # -----------------------------------------------------
-    # 到这里才真正需要 Embedding Model
-    # -----------------------------------------------------
+    # =====================================================
+    # 这里才真正加载 Embedding Model
+    # =====================================================
 
     embedding_model = (
         get_embedding_model()
@@ -667,7 +803,9 @@ def build_vector_store():
 
 
     embeddings = (
-        embedding_model.encode(
+
+        embedding_model
+        .encode(
             texts,
             show_progress_bar=True,
         )
@@ -707,14 +845,15 @@ def build_vector_store():
     ]
 
 
-    # -----------------------------------------------------
-    # 新 Embedding 成功后，
-    # 才删除旧 Chroma 记录。
+    # =====================================================
+    # Embedding 成功生成后，
+    # 才删除旧 Chroma 数据。
     #
-    # 避免模型异常时丢失已有索引。
-    # -----------------------------------------------------
+    # 防止模型出错时旧索引直接丢失。
+    # =====================================================
 
     existing_ids = (
+
         collection
         .get()
         .get(
@@ -727,7 +866,7 @@ def build_vector_store():
     if existing_ids:
 
         print(
-            f"\n正在删除旧索引："
+            "\n正在删除旧索引："
             f"{len(existing_ids)} 条"
         )
 
@@ -757,12 +896,12 @@ def build_vector_store():
     )
 
     print(
-        f"写入 Chunk 数量："
+        "写入 Chunk 数量："
         f"{len(documents)}"
     )
 
     print(
-        f"索引版本："
+        "索引版本："
         f"{INDEX_VERSION}"
     )
 
@@ -775,14 +914,25 @@ def build_vector_store():
 
 
 # =========================================================
-# Auto Sync
+# 13. Auto Sync
 # =========================================================
 
 def ensure_vector_store():
+    """
+    检查 Knowledge 是否变化。
+
+    如果：
+    - Knowledge 内容变化
+    - INDEX_VERSION 变化
+    - Chroma 为空
+
+    则自动重建索引。
+    """
 
     current_hash = (
         calculate_knowledge_hash()
     )
+
 
     saved_hash = (
         load_saved_hash()
@@ -790,8 +940,11 @@ def ensure_vector_store():
 
 
     if (
-        current_hash != saved_hash
-        or collection.count() == 0
+        current_hash
+        != saved_hash
+
+        or collection.count()
+        == 0
     ):
 
         print(
@@ -820,18 +973,24 @@ def ensure_vector_store():
 
 
 # =========================================================
-# Metadata Filter Count
+# 14. Metadata Filter Count
 # =========================================================
 
 def get_filtered_count(
     source_type: str
 ) -> int:
+    """
+    查询某一 source_type
+    在 Chroma 中包含多少 Chunk。
+    """
 
-    results = collection.get(
-        where={
-            "source_type":
-                source_type
-        }
+    results = (
+        collection.get(
+            where={
+                "source_type":
+                    source_type
+            }
+        )
     )
 
 
@@ -844,7 +1003,7 @@ def get_filtered_count(
 
 
 # =========================================================
-# Chroma Query
+# 15. Chroma Query
 # =========================================================
 
 def query_chroma(
@@ -853,8 +1012,13 @@ def query_chroma(
     source_type=None,
 ):
     """
-    传入资料类别时使用 Metadata Filter，
-    否则搜索全库。
+    执行 Chroma 查询。
+
+    source_type 存在：
+        Metadata Filter
+
+    source_type=None：
+        全库向量检索
     """
 
     query_args = {
@@ -872,6 +1036,7 @@ def query_chroma(
         query_args[
             "where"
         ] = {
+
             "source_type":
                 source_type
         }
@@ -883,7 +1048,7 @@ def query_chroma(
 
 
 # =========================================================
-# Search Vector Store
+# 16. Search Vector Store
 # =========================================================
 
 def search_vector_store(
@@ -893,25 +1058,36 @@ def search_vector_store(
     debug: bool = False,
 ):
     """
-    自动同步后检索。
+    AI Resume Retrieval 主入口。
 
-    意图不明确或对应类别无数据时，
-    回退全库。
+    Pipeline：
 
-    Embedding Model 只有执行到真正的
-    Query Embedding 时才第一次加载。
+    Query
+        ↓
+    Knowledge Auto Sync
+        ↓
+    Intent Detection
+        ↓
+    MiniLM Query Embedding
+        ↓
+    Metadata Filter（如果明确）
+        ↓
+    Chroma Vector Search
+        ↓
+    Top-K Results
     """
 
     if (
         not query.strip()
         or top_k <= 0
     ):
+
         return []
 
 
-    # -----------------------------------------------------
+    # =====================================================
     # Knowledge Auto Sync
-    # -----------------------------------------------------
+    # =====================================================
 
     ensure_vector_store()
 
@@ -922,12 +1098,13 @@ def search_vector_store(
 
 
     if collection_count == 0:
+
         return []
 
 
-    # -----------------------------------------------------
+    # =====================================================
     # Intent Detection
-    # -----------------------------------------------------
+    # =====================================================
 
     detected_source_type = (
 
@@ -941,19 +1118,20 @@ def search_vector_store(
     )
 
 
-    # -----------------------------------------------------
+    # =====================================================
     # Lazy Load Embedding Model
-    # -----------------------------------------------------
+    # =====================================================
 
     embedding_model = (
         get_embedding_model()
     )
 
 
-    # 保留原问题的空白和大小写；
+    # 保留用户原始问题，
     # normalize_query 只用于规则匹配。
 
     query_embedding = (
+
         embedding_model
         .encode(
             [query]
@@ -962,9 +1140,9 @@ def search_vector_store(
     )
 
 
-    # -----------------------------------------------------
+    # =====================================================
     # Metadata Filter
-    # -----------------------------------------------------
+    # =====================================================
 
     applied_source_type = None
 
@@ -1002,28 +1180,30 @@ def search_vector_store(
             )
 
 
-    # -----------------------------------------------------
-    # Vector Search
-    # -----------------------------------------------------
+    # =====================================================
+    # Chroma Search
+    # =====================================================
 
-    results = query_chroma(
+    results = (
+        query_chroma(
 
-        query_embedding=
-            query_embedding,
+            query_embedding=
+                query_embedding,
 
-        top_k=min(
-            top_k,
-            available_count,
-        ),
+            top_k=min(
+                top_k,
+                available_count,
+            ),
 
-        source_type=
-            applied_source_type,
+            source_type=
+                applied_source_type,
+        )
     )
 
 
-    # -----------------------------------------------------
+    # =====================================================
     # Debug
-    # -----------------------------------------------------
+    # =====================================================
 
     if debug:
 
@@ -1062,11 +1242,12 @@ def search_vector_store(
         )
 
 
-    # -----------------------------------------------------
+    # =====================================================
     # Format Results
-    # -----------------------------------------------------
+    # =====================================================
 
     documents = (
+
         results
         .get(
             "documents",
@@ -1074,7 +1255,9 @@ def search_vector_store(
         )[0]
     )
 
+
     metadatas = (
+
         results
         .get(
             "metadatas",
@@ -1082,7 +1265,9 @@ def search_vector_store(
         )[0]
     )
 
+
     distances = (
+
         results
         .get(
             "distances",
@@ -1149,7 +1334,7 @@ def search_vector_store(
 
 
 # =========================================================
-# Local Test
+# 17. Local Test
 # =========================================================
 
 if __name__ == "__main__":
@@ -1175,15 +1360,13 @@ if __name__ == "__main__":
     )
 
 
-    results = search_vector_store(
-
-        query=question,
-
-        top_k=5,
-
-        use_intent_filter=True,
-
-        debug=True,
+    results = (
+        search_vector_store(
+            query=question,
+            top_k=5,
+            use_intent_filter=True,
+            debug=True,
+        )
     )
 
 

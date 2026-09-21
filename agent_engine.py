@@ -1,5 +1,14 @@
 import json
 
+from config import (
+    CANDIDATE_NAME,
+    LLM_MODEL,
+    AGENT_MAX_STEPS,
+    ENABLE_COMPACT_CONTEXT,
+    COMPACT_CONTEXT_MAX_LINES,
+    COMPACT_CONTEXT_MAX_CHARS,
+)
+
 from agent_tools import (
     TOOLS,
     search_resume_knowledge,
@@ -9,22 +18,25 @@ from agent_tools import (
 
 
 # =========================================================
-# System Prompt
+# 1. System Prompt
 # =========================================================
 
-SYSTEM_PROMPT = """
-你是高颂岩的 AI 简历 Agent，主要服务对象是招聘方、HR 和面试官。
+SYSTEM_PROMPT = f"""
+你是{CANDIDATE_NAME}的 AI 简历 Agent，
+主要服务对象是招聘方、HR 和面试官。
 
-你的任务是帮助招聘方快速了解候选人高颂岩的教育背景、科研经历、
-项目经历、技术能力，以及他与目标岗位之间的匹配情况。
+你的任务是帮助招聘方快速了解候选人{CANDIDATE_NAME}的教育背景、
+科研经历、项目经历、技术能力，以及他与目标岗位之间的匹配情况。
 
 你可以根据用户任务自主选择一个或多个工具：
 
 1. search_resume_knowledge
-   用于查询候选人的教育背景、科研经历、项目经历、AI 项目和技术能力。
+   用于查询候选人的教育背景、科研经历、项目经历、
+   AI 项目和技术能力。
 
 2. analyze_job_fit
-   用于根据岗位 JD 分析候选人与岗位之间的相关经历和能力匹配情况。
+   用于根据岗位 JD 分析候选人与岗位之间的
+   相关经历和能力匹配情况。
 
 3. generate_interview_questions
    用于根据目标岗位和候选人的真实经历，
@@ -42,13 +54,15 @@ SYSTEM_PROMPT = """
 
 
 # =========================================================
-# Fast Path Prompt
+# 2. Fast Path Prompt
 # =========================================================
 
-FAST_PATH_SYSTEM_PROMPT = """
-你是高颂岩的 AI 简历助手，主要服务对象是招聘方、HR 和面试官。
+FAST_PATH_SYSTEM_PROMPT = f"""
+你是{CANDIDATE_NAME}的 AI 简历助手，
+主要服务对象是招聘方、HR 和面试官。
 
-系统已经提前从候选人知识库中检索出了与用户问题相关的真实资料。
+系统已经提前从候选人知识库中检索出了
+与用户问题相关的真实资料。
 
 请直接根据提供的知识库资料回答用户问题。
 
@@ -58,12 +72,13 @@ FAST_PATH_SYSTEM_PROMPT = """
 2. 如果资料不足，请明确说明资料不足。
 3. 优先直接回答问题，不需要解释检索过程。
 4. 回答专业、客观、简洁。
-5. 用户询问“有哪些”“做过哪些”等问题时，应完整列出相关内容。
+5. 用户询问“有哪些”“做过哪些”等问题时，
+   应尽量完整列出相关内容。
 """
 
 
 # =========================================================
-# Tool Dispatcher
+# 3. Tool Dispatcher
 # =========================================================
 
 def execute_tool(
@@ -95,7 +110,7 @@ def execute_tool(
 
 
 # =========================================================
-# Conversation History
+# 4. Conversation History
 # =========================================================
 
 def append_conversation_history(
@@ -106,7 +121,6 @@ def append_conversation_history(
     if not conversation_history:
         return
 
-
     for message in conversation_history:
 
         if message.get("role") not in (
@@ -115,14 +129,12 @@ def append_conversation_history(
         ):
             continue
 
-
         content = message.get(
             "content"
         )
 
         if not content:
             continue
-
 
         messages.append(
             {
@@ -136,7 +148,7 @@ def append_conversation_history(
 
 
 # =========================================================
-# Full Agent Route Detection
+# 5. Full Agent Route Detection
 # =========================================================
 
 def should_use_full_agent(
@@ -149,7 +161,6 @@ def should_use_full_agent(
         .replace(" ", "")
         .replace("\n", "")
     )
-
 
     complex_patterns = (
         "岗位匹配",
@@ -168,13 +179,11 @@ def should_use_full_agent(
         "生成面试",
     )
 
-
     if any(
         pattern in q
         for pattern in complex_patterns
     ):
         return True
-
 
     if (
         "岗位" in q
@@ -191,22 +200,18 @@ def should_use_full_agent(
     ):
         return True
 
-
     return False
 
 
 # =========================================================
-# Overview Question Detection
+# 6. Overview Question Detection
 # =========================================================
 
 def is_overview_question(
     user_question: str
 ) -> bool:
     """
-    判断是不是“概览 / 列表型”问题。
-
-    这类问题通常不需要完整长正文，
-    章节标题和少量关键信息已经足够。
+    判断是否属于概览 / 列表型问题。
     """
 
     q = (
@@ -215,7 +220,6 @@ def is_overview_question(
         .replace(" ", "")
         .replace("\n", "")
     )
-
 
     overview_patterns = (
         "有哪些",
@@ -235,7 +239,6 @@ def is_overview_question(
         "实习有哪些",
     )
 
-
     return any(
         pattern in q
         for pattern in overview_patterns
@@ -243,23 +246,22 @@ def is_overview_question(
 
 
 # =========================================================
-# Compact Context Builder
+# 7. Compact Context Builder
 # =========================================================
 
 def build_compact_context(
     knowledge_result: str
 ) -> str:
     """
-    把 search_resume_knowledge 返回的完整 JSON
-    压缩成适合概览问题使用的短上下文。
+    为概览型问题构建短上下文。
 
-    每个 Chunk 只保留：
-    - 资料类型
-    - 章节标题
-    - 最多 2 条关键正文
+    参数由 config.py 控制：
 
-    避免把 Top-5 的完整几千字正文
-    全部发送给 DeepSeek。
+    COMPACT_CONTEXT_MAX_LINES
+        每个 Chunk 最多保留几条信息
+
+    COMPACT_CONTEXT_MAX_CHARS
+        每条信息最多保留多少字符
     """
 
     try:
@@ -272,79 +274,58 @@ def build_compact_context(
 
         return knowledge_result
 
-
     results = data.get(
         "results",
         []
     )
 
-
     if not results:
 
         return "没有检索到相关候选人资料。"
 
-
     compact_blocks = []
-
 
     for index, result in enumerate(
         results,
         start=1,
     ):
 
-        source_type = (
-            result.get(
-                "source_type",
-                ""
-            )
+        source_type = result.get(
+            "source_type",
+            "",
         )
 
-        section = (
-            result.get(
-                "section",
-                ""
-            )
+        section = result.get(
+            "section",
+            "",
         )
 
-        content = (
-            result.get(
-                "content",
-                ""
-            )
+        content = result.get(
+            "content",
+            "",
         )
-
-
-        # -------------------------------------------------
-        # 从正文中抽取少量有效信息
-        # -------------------------------------------------
 
         useful_lines = []
-
 
         for line in content.splitlines():
 
             line = line.strip()
 
-
-            # 跳过空行
             if not line:
                 continue
 
-
-            # 跳过 Markdown 标题，
-            # 因为 section 已经单独提供。
+            # Markdown 标题已经有 section，
+            # 不重复发送。
             if line.startswith("#"):
                 continue
 
-
-            # 优先保留列表正文
             if line.startswith("-"):
 
                 clean_line = (
-                    line.lstrip("-")
+                    line
+                    .lstrip("-")
                     .strip()
                 )
-
 
                 if clean_line:
 
@@ -352,11 +333,11 @@ def build_compact_context(
                         clean_line
                     )
 
-
-            # 每个 Chunk 最多两条
-            if len(useful_lines) >= 2:
+            if (
+                len(useful_lines)
+                >= COMPACT_CONTEXT_MAX_LINES
+            ):
                 break
-
 
         block = (
             f"{index}. "
@@ -364,34 +345,31 @@ def build_compact_context(
             f"章节：{section}"
         )
 
-
         if useful_lines:
 
-            block += (
-                "\n关键信息："
-            )
-
+            block += "\n关键信息："
 
             for line in useful_lines:
 
-                # 防止单条内容异常过长
-                if len(line) > 220:
+                if (
+                    len(line)
+                    > COMPACT_CONTEXT_MAX_CHARS
+                ):
 
                     line = (
-                        line[:220]
+                        line[
+                            :COMPACT_CONTEXT_MAX_CHARS
+                        ]
                         + "..."
                     )
-
 
                 block += (
                     f"\n- {line}"
                 )
 
-
         compact_blocks.append(
             block
         )
-
 
     return "\n\n".join(
         compact_blocks
@@ -399,7 +377,7 @@ def build_compact_context(
 
 
 # =========================================================
-# Fast Path
+# 8. Fast Path
 # =========================================================
 
 def run_fast_path(
@@ -408,26 +386,25 @@ def run_fast_path(
     conversation_history=None,
 ):
     """
-    普通简历问答快速路径。
+    普通简历问答。
 
     Overview：
         Retrieval
         → Compact Context
-        → DeepSeek 1 次
+        → DeepSeek ×1
 
     Detail：
         Retrieval
         → Full Context
-        → DeepSeek 1 次
+        → DeepSeek ×1
     """
 
     print(
         "Agent Route：Fast Path"
     )
 
-
     # =====================================================
-    # 1. Retrieval
+    # Retrieval
     # =====================================================
 
     knowledge_result = (
@@ -436,17 +413,16 @@ def run_fast_path(
         )
     )
 
-
     # =====================================================
-    # 2. Context Mode
+    # Context Mode
     # =====================================================
 
     overview_mode = (
-        is_overview_question(
+        ENABLE_COMPACT_CONTEXT
+        and is_overview_question(
             user_question
         )
     )
-
 
     if overview_mode:
 
@@ -460,7 +436,6 @@ def run_fast_path(
             )
         )
 
-
     else:
 
         print(
@@ -471,9 +446,8 @@ def run_fast_path(
             knowledge_result
         )
 
-
     # =====================================================
-    # 3. Messages
+    # Messages
     # =====================================================
 
     messages = [
@@ -486,12 +460,10 @@ def run_fast_path(
         }
     ]
 
-
     append_conversation_history(
         messages,
         conversation_history,
     )
-
 
     messages.append(
         {
@@ -511,9 +483,8 @@ def run_fast_path(
         }
     )
 
-
     # =====================================================
-    # 4. DeepSeek
+    # DeepSeek ×1
     # =====================================================
 
     response = (
@@ -521,11 +492,10 @@ def run_fast_path(
         .chat
         .completions
         .create(
-            model="deepseek-chat",
+            model=LLM_MODEL,
             messages=messages,
         )
     )
-
 
     answer = (
         response
@@ -533,7 +503,6 @@ def run_fast_path(
         .message
         .content
     )
-
 
     return {
         "answer":
@@ -561,20 +530,28 @@ def run_fast_path(
 
 
 # =========================================================
-# Full Multi-Tool Agent
+# 9. Full Multi-Tool Agent
 # =========================================================
 
 def run_full_agent(
     client,
     user_question,
     conversation_history=None,
-    max_steps=5,
+    max_steps=AGENT_MAX_STEPS,
 ):
+    """
+    完整 Multi-Tool Agent。
+
+    用于：
+    - JD 分析
+    - 岗位匹配
+    - 面试问题
+    - 多工具复杂任务
+    """
 
     print(
         "Agent Route：Full Agent"
     )
-
 
     messages = [
         {
@@ -586,12 +563,10 @@ def run_full_agent(
         }
     ]
 
-
     append_conversation_history(
         messages,
         conversation_history,
     )
-
 
     messages.append(
         {
@@ -603,11 +578,10 @@ def run_full_agent(
         }
     )
 
-
     tool_trace = []
 
+    # 防止相同 Tool + 参数重复执行
     tool_cache = {}
-
 
     # =====================================================
     # Agent Loop
@@ -622,20 +596,12 @@ def run_full_agent(
             .chat
             .completions
             .create(
-                model=
-                    "deepseek-chat",
-
-                messages=
-                    messages,
-
-                tools=
-                    TOOLS,
-
-                tool_choice=
-                    "auto",
+                model=LLM_MODEL,
+                messages=messages,
+                tools=TOOLS,
+                tool_choice="auto",
             )
         )
-
 
         assistant_message = (
             response
@@ -643,16 +609,14 @@ def run_full_agent(
             .message
         )
 
-
         messages.append(
             assistant_message.model_dump(
                 exclude_none=True
             )
         )
 
-
         # -------------------------------------------------
-        # Agent 已完成
+        # 没有 Tool Call
         # -------------------------------------------------
 
         if not assistant_message.tool_calls:
@@ -665,9 +629,8 @@ def run_full_agent(
                     tool_trace,
             }
 
-
         # -------------------------------------------------
-        # 执行 Tool
+        # Execute Tools
         # -------------------------------------------------
 
         for tool_call in (
@@ -680,7 +643,6 @@ def run_full_agent(
                 .name
             )
 
-
             tool_arguments = (
                 json.loads(
                     tool_call
@@ -688,7 +650,6 @@ def run_full_agent(
                     .arguments
                 )
             )
-
 
             cache_key = (
                 tool_name,
@@ -699,7 +660,6 @@ def run_full_agent(
                 ),
             )
 
-
             if cache_key in tool_cache:
 
                 tool_result = (
@@ -707,7 +667,6 @@ def run_full_agent(
                         cache_key
                     ]
                 )
-
 
             else:
 
@@ -718,11 +677,9 @@ def run_full_agent(
                     )
                 )
 
-
                 tool_cache[
                     cache_key
                 ] = tool_result
-
 
             tool_trace.append(
                 {
@@ -733,7 +690,6 @@ def run_full_agent(
                         tool_arguments,
                 }
             )
-
 
             messages.append(
                 {
@@ -748,6 +704,9 @@ def run_full_agent(
                 }
             )
 
+    # =====================================================
+    # 防止 Agent 无限循环
+    # =====================================================
 
     return {
         "answer":
@@ -762,15 +721,24 @@ def run_full_agent(
 
 
 # =========================================================
-# Public Agent Entry
+# 10. Public Agent Entry
 # =========================================================
 
 def run_agent(
     client,
     user_question,
     conversation_history=None,
-    max_steps=5,
+    max_steps=AGENT_MAX_STEPS,
 ):
+    """
+    AI Resume Agent 统一入口。
+
+    Fast Path：
+        普通简历问答
+
+    Full Agent：
+        JD / 岗位匹配 / 面试等复杂任务
+    """
 
     if should_use_full_agent(
         user_question
@@ -782,7 +750,6 @@ def run_agent(
             conversation_history=conversation_history,
             max_steps=max_steps,
         )
-
 
     return run_fast_path(
         client=client,

@@ -25,6 +25,12 @@ from pydantic import BaseModel, Field
 
 from agent_engine import run_agent
 
+from config import (
+    API_TITLE,
+    API_VERSION,
+    DEEPSEEK_BASE_URL,
+)
+
 
 # =========================================================
 # 1. Logging
@@ -50,12 +56,12 @@ logger = logging.getLogger(
 # =========================================================
 
 app = FastAPI(
-    title="AI Resume Agent API",
+    title=API_TITLE,
     description=(
         "面向招聘场景的 AI Resume Agent API，"
         "支持候选人知识问答、岗位匹配和面试辅助。"
     ),
-    version="1.1.0",
+    version=API_VERSION,
 )
 
 
@@ -132,6 +138,7 @@ def load_deepseek_api_key() -> str:
             )
 
             if value:
+
                 return str(
                     value
                 )
@@ -161,6 +168,7 @@ def load_deepseek_api_key() -> str:
                 )
 
                 if value:
+
                     return str(
                         value
                     )
@@ -182,6 +190,7 @@ def get_deepseek_client():
         "Initializing DeepSeek client"
     )
 
+
     api_key = (
         load_deepseek_api_key()
     )
@@ -189,7 +198,7 @@ def get_deepseek_client():
 
     client = OpenAI(
         api_key=api_key,
-        base_url="https://api.deepseek.com",
+        base_url=DEEPSEEK_BASE_URL,
     )
 
 
@@ -210,6 +219,7 @@ async def request_logging(
         uuid.uuid4()
         .hex[:8]
     )
+
 
     start_time = (
         time.perf_counter()
@@ -295,10 +305,8 @@ async def global_exception_handler(
         status_code=500,
         content={
             "success": False,
-            "error": (
-                "AI Resume Agent "
-                "服务内部错误。"
-            ),
+            "error":
+                "AI Resume Agent 服务内部错误。",
         },
     )
 
@@ -312,13 +320,13 @@ def root():
 
     return {
         "service":
-            "AI Resume Agent API",
+            API_TITLE,
 
         "status":
             "running",
 
         "version":
-            "1.1.0",
+            API_VERSION,
     }
 
 
@@ -334,7 +342,7 @@ def health():
             "ok",
 
         "service":
-            "AI Resume Agent",
+            API_TITLE,
     }
 
 
@@ -368,7 +376,12 @@ def chat(
 
 
     return {
-        "success": True,
-        "question": request.question,
-        "result": result,
+        "success":
+            True,
+
+        "question":
+            request.question,
+
+        "result":
+            result,
     }
