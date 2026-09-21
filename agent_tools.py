@@ -1,4 +1,4 @@
-from embedding_retriever import retrieve
+from vector_store import search_vector_store
 
 
 # =========================================================
@@ -7,10 +7,13 @@ from embedding_retriever import retrieve
 
 def search_resume_knowledge(query: str) -> str:
     """
-    搜索个人简历知识库。
+    使用 Chroma 向量数据库搜索个人简历知识库。
     """
 
-    results = retrieve(query, top_k=3)
+    results = search_vector_store(
+        query=query,
+        top_k=3
+    )
 
     if not results:
         return "知识库中没有找到相关信息。"
@@ -21,7 +24,7 @@ def search_resume_knowledge(query: str) -> str:
         context_parts.append(
             f"""
 来源：{result['source']}
-相似度：{result['score']:.4f}
+向量距离：{result['distance']:.4f}
 内容：
 {result['content']}
 """
@@ -36,10 +39,14 @@ def search_resume_knowledge(query: str) -> str:
 
 def analyze_job_fit(job_description: str) -> str:
     """
-    根据岗位 JD 检索与岗位要求最相关的候选人经历和技能。
+    根据岗位 JD，
+    从 Chroma 向量数据库中检索最相关的候选人经历。
     """
 
-    results = retrieve(job_description, top_k=5)
+    results = search_vector_store(
+        query=job_description,
+        top_k=5
+    )
 
     if not results:
         return "没有找到与该岗位要求相关的个人经历。"
@@ -53,7 +60,7 @@ def analyze_job_fit(job_description: str) -> str:
             f"""
 【相关资料 {i}】
 来源：{result['source']}
-相似度：{result['score']:.4f}
+向量距离：{result['distance']:.4f}
 内容：
 {result['content']}
 """
@@ -63,13 +70,13 @@ def analyze_job_fit(job_description: str) -> str:
 
 
 # =========================================================
-# Tool 3：根据岗位生成面试追问素材
+# Tool 3：生成面试追问素材
 # =========================================================
 
 def generate_interview_questions(job_description: str) -> str:
     """
     根据岗位 JD 检索候选人的相关经历，
-    为面试官生成针对性的面试追问提供真实素材。
+    为招聘方生成针对性的面试问题提供真实素材。
     """
 
     query = (
@@ -79,7 +86,10 @@ def generate_interview_questions(job_description: str) -> str:
         "用于帮助面试官设计针对性的面试问题。"
     )
 
-    results = retrieve(query, top_k=5)
+    results = search_vector_store(
+        query=query,
+        top_k=5
+    )
 
     if not results:
         return "没有找到适合生成面试问题的候选人资料。"
@@ -93,7 +103,7 @@ def generate_interview_questions(job_description: str) -> str:
             f"""
 【候选人资料 {i}】
 来源：{result['source']}
-相似度：{result['score']:.4f}
+向量距离：{result['distance']:.4f}
 内容：
 {result['content']}
 """
@@ -121,7 +131,7 @@ TOOLS = [
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "需要在个人简历知识库中检索的问题或关键词"
+                        "description": "需要在候选人知识库中检索的问题或关键词"
                     }
                 },
                 "required": ["query"]
@@ -136,14 +146,13 @@ TOOLS = [
             "description": (
                 "当招聘方提供岗位JD、岗位职责或任职要求，"
                 "并希望分析高颂岩与该岗位的匹配情况时使用。"
-                "该工具会根据岗位要求检索最相关的候选人项目、技能和科研经历。"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "job_description": {
                         "type": "string",
-                        "description": "招聘方提供的完整岗位JD、岗位职责或任职要求"
+                        "description": "完整岗位JD、岗位职责或任职要求"
                     }
                 },
                 "required": ["job_description"]
