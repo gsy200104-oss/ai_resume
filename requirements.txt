@@ -3,3 +3,5 @@ openai
 sentence-transformers
 scikit-learn
 chromadb
+fastapi
+uvicorn
