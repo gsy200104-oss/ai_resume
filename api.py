@@ -1,22 +1,25 @@
 """
 AI Resume Agent FastAPI Service
 
-作用：
-- 将现有 AI Resume Agent 封装为 HTTP API
+功能：
+- 提供 AI Resume Agent HTTP API
 - 复用 agent_engine.py
-- 复用 agent_tools.py
-- 复用 vector_store.py
-- 不改变现有 Streamlit 应用
+- 记录 API 请求日志与耗时
+- 提供统一异常处理
 """
 
+import logging
 import os
+import time
 import tomllib
+import uuid
 
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from openai import OpenAI
 from pydantic import BaseModel, Field
 
@@ -24,7 +27,26 @@ from agent_engine import run_agent
 
 
 # =========================================================
-# 1. FastAPI App
+# 1. Logging
+# =========================================================
+
+logging.basicConfig(
+    level=logging.INFO,
+    format=(
+        "%(asctime)s | "
+        "%(levelname)s | "
+        "%(name)s | "
+        "%(message)s"
+    ),
+)
+
+logger = logging.getLogger(
+    "ai_resume_api"
+)
+
+
+# =========================================================
+# 2. FastAPI App
 # =========================================================
 
 app = FastAPI(
@@ -33,18 +55,15 @@ app = FastAPI(
         "面向招聘场景的 AI Resume Agent API，"
         "支持候选人知识问答、岗位匹配和面试辅助。"
     ),
-    version="1.0.0",
+    version="1.1.0",
 )
 
 
 # =========================================================
-# 2. Request Model
+# 3. Request Model
 # =========================================================
 
 class ChatRequest(BaseModel):
-    """
-    /chat 接口请求格式
-    """
 
     question: str = Field(
         ...,
@@ -52,28 +71,19 @@ class ChatRequest(BaseModel):
         description="用户向 AI Resume Agent 提出的问题",
     )
 
-    conversation_history: list[dict[str, Any]] | None = Field(
+    conversation_history: (
+        list[dict[str, Any]] | None
+    ) = Field(
         default=None,
         description="可选的历史对话",
     )
 
 
 # =========================================================
-# 3. DeepSeek API Key
+# 4. DeepSeek API Key
 # =========================================================
 
 def load_deepseek_api_key() -> str:
-    """
-    优先从系统环境变量读取：
-
-        DEEPSEEK_API_KEY
-
-    如果没有，则尝试读取现有：
-
-        .streamlit/secrets.toml
-
-    因此暂时不需要复制或暴露 API Key。
-    """
 
     # -----------------------------------------------------
     # A. Environment Variable
@@ -107,10 +117,6 @@ def load_deepseek_api_key() -> str:
             )
 
 
-        # 常见写法：
-        #
-        # DEEPSEEK_API_KEY = "xxx"
-
         possible_keys = (
             "DEEPSEEK_API_KEY",
             "deepseek_api_key",
@@ -126,16 +132,15 @@ def load_deepseek_api_key() -> str:
             )
 
             if value:
-                return str(value)
+                return str(
+                    value
+                )
 
 
-        # 兼容：
-        #
-        # [deepseek]
-        # api_key = "xxx"
-
-        deepseek_config = secrets.get(
-            "deepseek"
+        deepseek_config = (
+            secrets.get(
+                "deepseek"
+            )
         )
 
 
@@ -149,37 +154,33 @@ def load_deepseek_api_key() -> str:
                 "key",
             ):
 
-                value = deepseek_config.get(
-                    key_name
+                value = (
+                    deepseek_config.get(
+                        key_name
+                    )
                 )
 
                 if value:
-                    return str(value)
+                    return str(
+                        value
+                    )
 
-
-    # -----------------------------------------------------
-    # C. 没找到 Key
-    # -----------------------------------------------------
 
     raise RuntimeError(
         "没有找到 DeepSeek API Key。"
-        "请检查 DEEPSEEK_API_KEY 环境变量"
-        "或 .streamlit/secrets.toml。"
     )
 
 
 # =========================================================
-# 4. DeepSeek Client
+# 5. DeepSeek Client
 # =========================================================
 
 @lru_cache(maxsize=1)
 def get_deepseek_client():
-    """
-    Client 懒加载。
 
-    启动 FastAPI 时不会重复创建 Client，
-    第一次真正调用 Agent 时才初始化。
-    """
+    logger.info(
+        "Initializing DeepSeek client"
+    )
 
     api_key = (
         load_deepseek_api_key()
@@ -196,7 +197,114 @@ def get_deepseek_client():
 
 
 # =========================================================
-# 5. Root
+# 6. Request Logging Middleware
+# =========================================================
+
+@app.middleware("http")
+async def request_logging(
+    request: Request,
+    call_next,
+):
+
+    request_id = (
+        uuid.uuid4()
+        .hex[:8]
+    )
+
+    start_time = (
+        time.perf_counter()
+    )
+
+
+    logger.info(
+        "[%s] %s %s START",
+        request_id,
+        request.method,
+        request.url.path,
+    )
+
+
+    try:
+
+        response = await call_next(
+            request
+        )
+
+
+    except Exception:
+
+        elapsed = (
+            time.perf_counter()
+            - start_time
+        )
+
+
+        logger.exception(
+            "[%s] %s %s FAILED | %.3fs",
+            request_id,
+            request.method,
+            request.url.path,
+            elapsed,
+        )
+
+        raise
+
+
+    elapsed = (
+        time.perf_counter()
+        - start_time
+    )
+
+
+    logger.info(
+        "[%s] %s %s %s | %.3fs",
+        request_id,
+        request.method,
+        request.url.path,
+        response.status_code,
+        elapsed,
+    )
+
+
+    response.headers[
+        "X-Request-ID"
+    ] = request_id
+
+
+    return response
+
+
+# =========================================================
+# 7. Global Exception Handler
+# =========================================================
+
+@app.exception_handler(Exception)
+async def global_exception_handler(
+    request: Request,
+    exc: Exception,
+):
+
+    logger.exception(
+        "Unhandled exception on %s %s",
+        request.method,
+        request.url.path,
+    )
+
+
+    return JSONResponse(
+        status_code=500,
+        content={
+            "success": False,
+            "error": (
+                "AI Resume Agent "
+                "服务内部错误。"
+            ),
+        },
+    )
+
+
+# =========================================================
+# 8. Root
 # =========================================================
 
 @app.get("/")
@@ -210,12 +318,12 @@ def root():
             "running",
 
         "version":
-            "1.0.0",
+            "1.1.0",
     }
 
 
 # =========================================================
-# 6. Health Check
+# 9. Health Check
 # =========================================================
 
 @app.get("/health")
@@ -231,59 +339,36 @@ def health():
 
 
 # =========================================================
-# 7. Chat API
+# 10. Chat API
 # =========================================================
 
 @app.post("/chat")
 def chat(
     request: ChatRequest
 ):
-    """
-    调用现有 Agent Engine。
 
-    Pipeline：
-
-    HTTP Request
-        ↓
-    FastAPI
-        ↓
-    Agent Engine
-        ↓
-    Tool Calling
-        ↓
-    Retrieval / Chroma
-        ↓
-    DeepSeek
-        ↓
-    JSON Response
-    """
-
-    try:
-
-        client = (
-            get_deepseek_client()
-        )
+    logger.info(
+        "Agent question received | %s",
+        request.question,
+    )
 
 
-        result = run_agent(
-            client=client,
-            user_question=request.question,
-            conversation_history=(
-                request.conversation_history
-            ),
-        )
+    client = (
+        get_deepseek_client()
+    )
 
 
-        return {
-            "success": True,
-            "question": request.question,
-            "result": result,
-        }
+    result = run_agent(
+        client=client,
+        user_question=request.question,
+        conversation_history=(
+            request.conversation_history
+        ),
+    )
 
 
-    except Exception as exc:
-
-        raise HTTPException(
-            status_code=500,
-            detail=str(exc),
-        ) from exc
+    return {
+        "success": True,
+        "question": request.question,
+        "result": result,
+    }
