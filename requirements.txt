@@ -5,3 +5,4 @@ scikit-learn
 chromadb
 fastapi
 uvicorn
+pytest
