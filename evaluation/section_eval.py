@@ -1,5 +1,5 @@
 from vector_store import search_vector_store
-from reranker import rerank_results
+from evaluation.reranker import rerank_results
 
 
 # =========================================================
