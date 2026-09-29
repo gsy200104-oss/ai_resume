@@ -51,6 +51,8 @@ SOURCE_TYPE_MAP = {
     "research.md": "科研经历",
     "projects.md": "项目经历",
     "skills.md": "技能与能力",
+    "career.md": "技能与能力",
+    "interview_cases.md": "项目经历",
 }
 
 
@@ -87,14 +89,8 @@ def get_embedding_model():
     """
     懒加载 Embedding Model。
 
-    启动 Streamlit / FastAPI 时：
-        不加载 MiniLM。
-
-    第一次真正需要进行：
-        - Query Embedding
-        - Knowledge 重建
-
-    时才加载。
+    第一次真正需要进行 Query Embedding
+    或 Knowledge 重建时才加载。
 
     同一 Python 进程后续直接复用模型。
     """
@@ -104,15 +100,20 @@ def get_embedding_model():
         f"正在加载：{MODEL_NAME}"
     )
 
-    # 放到函数内部导入，
-    # 避免 import vector_store 时提前加载
-    # sentence-transformers。
-    from sentence_transformers import (
-        SentenceTransformer,
-    )
+    import torch
+
+    torch.set_num_threads(1)
+
+    try:
+        torch.set_num_interop_threads(1)
+    except RuntimeError:
+        pass
+
+    from sentence_transformers import SentenceTransformer
 
     model = SentenceTransformer(
-        MODEL_NAME
+        MODEL_NAME,
+        device="cpu",
     )
 
     print(
@@ -166,74 +167,43 @@ def normalize_query(
 # 6. Intent Detection
 # =========================================================
 
-def detect_query_source_type(
-    query: str
+def detect_query_source_types(
+    query: str,
 ):
     """
-    判断 Query 是否明确属于某一种资料类别。
+    检测 Query 涉及的所有资料类别。
 
-    如果明确：
-        返回 source_type，
-        后续使用 Metadata Filter。
+    返回示例：
 
-    如果不明确或涉及多个类别：
-        返回 None，
-        使用全库向量检索。
+    单类别：
+        ["实习经历"]
+
+    多类别：
+        ["科研经历", "实习经历"]
+
+    无明确类别：
+        []
+
+    注意：
+    这里只做本地规则判断，
+    不调用 LLM，不生成 Embedding，
+    因此几乎不会增加响应时间。
     """
 
     q = normalize_query(
         query
     )
 
-
     # =====================================================
-    # 实习
-    # =====================================================
-
-    # “实习”属于强类别信号。
-    if "实习" in q:
-
-        return "实习经历"
-
-
-    # =====================================================
-    # 管理 / 协作
+    # Pattern Definitions
     # =====================================================
 
-    # 例如：
-    # “项目管理能力怎么样”
-    #
-    # 这种问题不能简单路由到 projects.md，
-    # 因为还可能需要 skills.md。
-
-    if (
-        (
-            "项目" in q
-            and any(
-                pattern in q
-                for pattern in (
-                    "管理",
-                    "统筹",
-                    "协作",
-                    "协调",
-                )
-            )
-        )
-        or any(
-            pattern in q
-            for pattern in (
-                "团队协作",
-                "团队合作",
-            )
-        )
-    ):
-
-        return None
-
-
-    # =====================================================
-    # Research
-    # =====================================================
+    internship_patterns = (
+        "实习",
+        "实习经历",
+        "实习经验",
+        "实习工作",
+    )
 
     research_patterns = (
         "硕士课题",
@@ -247,11 +217,6 @@ def detect_query_source_type(
         "做过哪些科研",
         "做过什么科研",
     )
-
-
-    # =====================================================
-    # Education
-    # =====================================================
 
     education_patterns = (
         "教育背景",
@@ -270,11 +235,6 @@ def detect_query_source_type(
         "硕士专业",
     )
 
-
-    # =====================================================
-    # Projects
-    # =====================================================
-
     project_patterns = (
         "项目经历",
         "项目经验",
@@ -290,15 +250,12 @@ def detect_query_source_type(
         "文献智能分析agent",
     )
 
-
-    # =====================================================
-    # Skills
-    # =====================================================
-
     skill_patterns = (
         "技能有哪些",
         "有哪些技能",
         "技术栈",
+        "技术能力",
+        "工程能力",
         "会哪些技术",
         "会什么技术",
         "掌握哪些技术",
@@ -310,15 +267,29 @@ def detect_query_source_type(
         "编程能力",
     )
 
-
     # =====================================================
-    # Collect Matches
+    # Ordered Matches
     # =====================================================
 
-    matches = set()
+    matches = []
 
+    def add_match(
+        source_type: str,
+    ):
+        """
+        保持类别顺序，同时避免重复。
+        """
+
+        if source_type not in matches:
+            matches.append(
+                source_type
+            )
 
     for source_type, patterns in (
+        (
+            "实习经历",
+            internship_patterns,
+        ),
         (
             "科研经历",
             research_patterns,
@@ -341,26 +312,102 @@ def detect_query_source_type(
             pattern in q
             for pattern in patterns
         ):
-
-            matches.add(
+            add_match(
                 source_type
             )
 
+    # =====================================================
+    # AI / RAG / Agent Project Detection
+    # =====================================================
+
+    # =====================================================
+    # Research Combination Detection
+    # =====================================================
+
+    # 解决例如：
+    # “科研与实习经历”
+    # “科研和项目经历”
+    #
+    # 这类表达中“科研”和“经历”被连接词隔开，
+    # 无法被“科研经历”这种固定短语直接命中。
+
+    if (
+        ("科研" in q or "研究" in q)
+        and any(
+            term in q
+            for term in (
+                "经历",
+                "工作",
+                "方向",
+                "成果",
+                "课题",
+            )
+        )
+    ):
+        add_match(
+            "科研经历"
+        )
+    
+    ai_terms = (
+        "ai",
+        "人工智能",
+        "大模型",
+        "llm",
+        "rag",
+        "agent",
+        "智能体",
+        "embedding",
+        "向量数据库",
+        "chroma",
+        "检索增强",
+        "toolcalling",
+        "tool calling",
+        "functioncalling",
+        "function calling",
+    )
+
+    implementation_terms = (
+        "项目",
+        "怎么实现",
+        "如何实现",
+        "实现",
+        "架构",
+        "系统",
+        "优化",
+        "调用",
+        "流程",
+        "原理",
+        "怎么做",
+        "如何做",
+        "tool",
+        "工具",
+    )
+
+    # 解决例如：
+    #
+    # “RAG 系统是怎么实现和优化的？”
+    # “Agent 如何调用多个 Tool？”
+    #
+    # 这类问题没有明确写“项目经历”，
+    # 但显然是在询问 AI 项目实现。
+
+    if (
+        any(
+            term in q
+            for term in ai_terms
+        )
+        and any(
+            term in q
+            for term in implementation_terms
+        )
+    ):
+        add_match(
+            "项目经历"
+        )
 
     # =====================================================
     # Publication
     # =====================================================
-
-    # “论文”本身不能直接认为是科研经历。
-    #
-    # 例如：
-    # “会不会进行论文分析？”
-    #
-    # 可能是在问 AI / 技能。
-    #
-    # 只有同时出现：
-    # 发表、DOI、作者、成果等信息时，
-    # 才判断为科研经历。
 
     publication_patterns = (
         "发表",
@@ -372,31 +419,44 @@ def detect_query_source_type(
         "论文标题",
     )
 
-
     if (
         "论文" in q
         and any(
             pattern in q
-            for pattern
-            in publication_patterns
+            for pattern in publication_patterns
         )
     ):
-
-        matches.add(
+        add_match(
             "科研经历"
         )
 
+    return matches
 
-    # =====================================================
-    # Only One Category
-    # =====================================================
 
-    if len(matches) == 1:
+def detect_query_source_type(
+    query: str,
+):
+    """
+    向后兼容旧代码。
 
-        return next(
-            iter(matches)
+    只有 Query 明确属于单一类别时，
+    才返回 source_type。
+
+    多类别或无明确类别：
+        返回 None。
+
+    search_vector_store 在升级完成前
+    仍然可以继续正常工作。
+    """
+
+    source_types = (
+        detect_query_source_types(
+            query
         )
+    )
 
+    if len(source_types) == 1:
+        return source_types[0]
 
     return None
 
@@ -1060,30 +1120,32 @@ def search_vector_store(
     """
     AI Resume Retrieval 主入口。
 
-    Pipeline：
+    Retrieval Strategy：
 
-    Query
-        ↓
-    Knowledge Auto Sync
-        ↓
-    Intent Detection
-        ↓
-    MiniLM Query Embedding
-        ↓
-    Metadata Filter（如果明确）
-        ↓
-    Chroma Vector Search
-        ↓
-    Top-K Results
+    1. 无明确 Intent
+       → 全库向量检索
+
+    2. 单一 Intent
+       → Metadata Filter + Vector Search
+
+    3. 多 Intent
+       → Query Embedding 仅计算一次
+       → 每个类别分别进行 Metadata Filter 检索
+       → Round-Robin 合并，保证类别覆盖
+       → 去重并限制最终 Context 数量
+
+    设计目标：
+        - 不增加额外 LLM 调用
+        - Query Embedding 只计算一次
+        - 多 Intent 保证每个类别至少有检索机会
+        - 控制最终 Chunk 数量，避免 Context 膨胀
     """
 
     if (
         not query.strip()
         or top_k <= 0
     ):
-
         return []
-
 
     # =====================================================
     # Knowledge Auto Sync
@@ -1091,32 +1153,25 @@ def search_vector_store(
 
     ensure_vector_store()
 
-
     collection_count = (
         collection.count()
     )
 
-
     if collection_count == 0:
-
         return []
-
 
     # =====================================================
     # Intent Detection
     # =====================================================
 
-    detected_source_type = (
+    detected_source_types = []
 
-        detect_query_source_type(
-            query
+    if use_intent_filter:
+        detected_source_types = (
+            detect_query_source_types(
+                query
+            )
         )
-
-        if use_intent_filter
-
-        else None
-    )
-
 
     # =====================================================
     # Lazy Load Embedding Model
@@ -1126,12 +1181,8 @@ def search_vector_store(
         get_embedding_model()
     )
 
-
-    # 保留用户原始问题，
-    # normalize_query 只用于规则匹配。
-
+    # Query Embedding 只计算一次。
     query_embedding = (
-
         embedding_model
         .encode(
             [query]
@@ -1139,23 +1190,169 @@ def search_vector_store(
         .tolist()
     )
 
+    # =====================================================
+    # Helper：Format Chroma Results
+    # =====================================================
+
+    def format_chroma_results(
+        results,
+        retrieval_mode,
+        metadata_filter,
+    ):
+        documents = (
+            results
+            .get(
+                "documents",
+                [[]],
+            )[0]
+        )
+
+        metadatas = (
+            results
+            .get(
+                "metadatas",
+                [[]],
+            )[0]
+        )
+
+        distances = (
+            results
+            .get(
+                "distances",
+                [[]],
+            )[0]
+        )
+
+        formatted = []
+
+        for index, document in enumerate(
+            documents
+        ):
+            metadata = (
+                metadatas[index]
+                or {}
+            )
+
+            distance = None
+
+            if index < len(distances):
+                distance = distances[index]
+
+            formatted.append(
+                {
+                    "source":
+                        metadata.get(
+                            "source",
+                            "",
+                        ),
+
+                    "source_type":
+                        metadata.get(
+                            "source_type",
+                            "",
+                        ),
+
+                    "section_title":
+                        metadata.get(
+                            "section_title",
+                            "",
+                        ),
+
+                    "content":
+                        document,
+
+                    "raw_content":
+                        metadata.get(
+                            "raw_content",
+                            "",
+                        ),
+
+                    "distance":
+                        distance,
+
+                    "retrieval_mode":
+                        retrieval_mode,
+
+                    "metadata_filter":
+                        metadata_filter,
+                }
+            )
+
+        return formatted
 
     # =====================================================
-    # Metadata Filter
+    # Case 1：No Clear Intent
     # =====================================================
 
-    applied_source_type = None
+    if len(
+        detected_source_types
+    ) == 0:
 
-    retrieval_mode = (
-        "global_vector_search"
-    )
+        retrieval_mode = (
+            "global_vector_search"
+        )
 
-    available_count = (
-        collection_count
-    )
+        results = query_chroma(
+            query_embedding=
+                query_embedding,
 
+            top_k=min(
+                top_k,
+                collection_count,
+            ),
 
-    if detected_source_type:
+            source_type=None,
+        )
+
+        search_results = (
+            format_chroma_results(
+                results=results,
+                retrieval_mode=
+                    retrieval_mode,
+                metadata_filter=None,
+            )
+        )
+
+        if debug:
+            print(
+                "\n" + "=" * 60
+            )
+            print(
+                "Retrieval Routing"
+            )
+            print(
+                "=" * 60
+            )
+            print(
+                "Query：",
+                query,
+            )
+            print(
+                "Intent Detection：",
+                "无明确类别",
+            )
+            print(
+                "Retrieval Mode：",
+                retrieval_mode,
+            )
+            print(
+                "Metadata Filter：",
+                "未启用",
+            )
+
+        return search_results
+
+    # =====================================================
+    # Case 2：Single Intent
+    # =====================================================
+
+    if len(
+        detected_source_types
+    ) == 1:
+
+        detected_source_type = (
+            detected_source_types[0]
+        )
 
         filtered_count = (
             get_filtered_count(
@@ -1163,43 +1360,300 @@ def search_vector_store(
             )
         )
 
-
         if filtered_count > 0:
-
-            applied_source_type = (
-                detected_source_type
-            )
-
-            available_count = (
-                filtered_count
-            )
 
             retrieval_mode = (
                 "metadata_filtered_"
                 "vector_search"
             )
 
+            results = query_chroma(
+                query_embedding=
+                    query_embedding,
+
+                top_k=min(
+                    top_k,
+                    filtered_count,
+                ),
+
+                source_type=
+                    detected_source_type,
+            )
+
+            search_results = (
+                format_chroma_results(
+                    results=results,
+                    retrieval_mode=
+                        retrieval_mode,
+                    metadata_filter=
+                        detected_source_type,
+                )
+            )
+
+        else:
+
+            # 如果该类别没有数据，
+            # 安全回退到全库检索。
+
+            retrieval_mode = (
+                "global_vector_search"
+            )
+
+            results = query_chroma(
+                query_embedding=
+                    query_embedding,
+
+                top_k=min(
+                    top_k,
+                    collection_count,
+                ),
+
+                source_type=None,
+            )
+
+            search_results = (
+                format_chroma_results(
+                    results=results,
+                    retrieval_mode=
+                        retrieval_mode,
+                    metadata_filter=None,
+                )
+            )
+
+        if debug:
+            print(
+                "\n" + "=" * 60
+            )
+            print(
+                "Retrieval Routing"
+            )
+            print(
+                "=" * 60
+            )
+            print(
+                "Query：",
+                query,
+            )
+            print(
+                "Intent Detection：",
+                detected_source_type,
+            )
+            print(
+                "Retrieval Mode：",
+                retrieval_mode,
+            )
+            print(
+                "Metadata Filter：",
+                detected_source_type
+                if filtered_count > 0
+                else "未启用",
+            )
+
+        return search_results
 
     # =====================================================
-    # Chroma Search
+    # Case 3：Multi-Intent Retrieval
     # =====================================================
 
-    results = (
-        query_chroma(
+    retrieval_mode = (
+        "multi_intent_"
+        "metadata_search"
+    )
 
+    intent_count = len(
+        detected_source_types
+    )
+
+    # 控制每个类别召回数量。
+    #
+    # 2~3 个类别：
+    #     每类最多取 2 个 Chunk。
+    #
+    # 4 个及以上类别：
+    #     每类先取 1 个 Chunk。
+    #
+    # 这样可以保证类别覆盖，
+    # 同时避免 Context 膨胀。
+
+    if intent_count <= 3:
+        per_type_k = 2
+    else:
+        per_type_k = 1
+
+    results_by_type = {}
+
+    for source_type in (
+        detected_source_types
+    ):
+
+        filtered_count = (
+            get_filtered_count(
+                source_type
+            )
+        )
+
+        if filtered_count <= 0:
+            continue
+
+        results = query_chroma(
+            query_embedding=
+                query_embedding,
+
+            top_k=min(
+                per_type_k,
+                filtered_count,
+            ),
+
+            source_type=
+                source_type,
+        )
+
+        formatted_results = (
+            format_chroma_results(
+                results=results,
+                retrieval_mode=
+                    retrieval_mode,
+                metadata_filter=
+                    source_type,
+            )
+        )
+
+        if formatted_results:
+            results_by_type[
+                source_type
+            ] = (
+                formatted_results
+            )
+
+    # =====================================================
+    # Round-Robin Merge
+    # =====================================================
+
+    # 最终 Context 数量：
+    #
+    # 至少覆盖所有 Intent，
+    # 但最多控制在 6 个 Chunk 左右。
+
+    final_limit = min(
+        max(
+            top_k,
+            intent_count,
+        ),
+        6,
+    )
+
+    merged_results = []
+
+    seen = set()
+
+    round_index = 0
+
+    while (
+        len(merged_results)
+        < final_limit
+    ):
+
+        added_this_round = False
+
+        for source_type in (
+            detected_source_types
+        ):
+
+            type_results = (
+                results_by_type.get(
+                    source_type,
+                    [],
+                )
+            )
+
+            if (
+                round_index
+                >= len(type_results)
+            ):
+                continue
+
+            item = (
+                type_results[
+                    round_index
+                ]
+            )
+
+            # 使用 Source + Section + Content
+            # 作为去重键。
+
+            dedup_key = (
+                item.get(
+                    "source",
+                    "",
+                ),
+                item.get(
+                    "section_title",
+                    "",
+                ),
+                item.get(
+                    "content",
+                    "",
+                ),
+            )
+
+            if dedup_key in seen:
+                continue
+
+            seen.add(
+                dedup_key
+            )
+
+            merged_results.append(
+                item
+            )
+
+            added_this_round = True
+
+            if (
+                len(merged_results)
+                >= final_limit
+            ):
+                break
+
+        if not added_this_round:
+            break
+
+        round_index += 1
+
+    # =====================================================
+    # Safety Fallback
+    # =====================================================
+
+    # 如果所有 Metadata Filter
+    # 都意外没有结果，
+    # 才退回全库检索。
+
+    if not merged_results:
+
+        retrieval_mode = (
+            "global_vector_search"
+        )
+
+        results = query_chroma(
             query_embedding=
                 query_embedding,
 
             top_k=min(
                 top_k,
-                available_count,
+                collection_count,
             ),
 
-            source_type=
-                applied_source_type,
+            source_type=None,
         )
-    )
 
+        merged_results = (
+            format_chroma_results(
+                results=results,
+                retrieval_mode=
+                    retrieval_mode,
+                metadata_filter=None,
+            )
+        )
 
     # =====================================================
     # Debug
@@ -1226,8 +1680,7 @@ def search_vector_store(
 
         print(
             "Intent Detection：",
-            detected_source_type
-            or "无明确单一类别",
+            detected_source_types,
         )
 
         print(
@@ -1236,101 +1689,28 @@ def search_vector_store(
         )
 
         print(
-            "Metadata Filter：",
-            applied_source_type
-            or "未启用",
+            "Metadata Filters：",
+            list(
+                results_by_type.keys()
+            )
+            if retrieval_mode
+            == "multi_intent_metadata_search"
+            else "未启用",
         )
 
-
-    # =====================================================
-    # Format Results
-    # =====================================================
-
-    documents = (
-
-        results
-        .get(
-            "documents",
-            [[]],
-        )[0]
-    )
-
-
-    metadatas = (
-
-        results
-        .get(
-            "metadatas",
-            [[]],
-        )[0]
-    )
-
-
-    distances = (
-
-        results
-        .get(
-            "distances",
-            [[]],
-        )[0]
-    )
-
-
-    search_results = []
-
-
-    for index, document in enumerate(
-        documents
-    ):
-
-        metadata = (
-            metadatas[index]
-            or {}
+        print(
+            "Per-Type Top-K：",
+            per_type_k,
         )
 
-
-        search_results.append(
-            {
-                "source":
-                    metadata.get(
-                        "source",
-                        "",
-                    ),
-
-                "source_type":
-                    metadata.get(
-                        "source_type",
-                        "",
-                    ),
-
-                "section_title":
-                    metadata.get(
-                        "section_title",
-                        "",
-                    ),
-
-                "content":
-                    document,
-
-                "raw_content":
-                    metadata.get(
-                        "raw_content",
-                        "",
-                    ),
-
-                "distance":
-                    distances[index],
-
-                "retrieval_mode":
-                    retrieval_mode,
-
-                "metadata_filter":
-                    applied_source_type,
-            }
+        print(
+            "Final Chunk Count：",
+            len(
+                merged_results
+            ),
         )
 
-
-    return search_results
+    return merged_results
 
 
 # =========================================================
